@@ -250,14 +250,21 @@ void interrupt_read(usb_dev_handle *dev) {
     }
 }
 
-void interrupt_read_temperatura(usb_dev_handle *dev, float *tempC) {
+void interrupt_read_temperature(usb_dev_handle *dev, float *tempC) {
  
-    int r,i, temperature;
+    int r,i, temperature[2];
     unsigned char answer[reqIntLen];
     bzero(answer, reqIntLen);
     
     r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
+
+    // If reading failed, retry once more...
     if( r != reqIntLen )
+    {
+      r = usb_interrupt_read(dev, 0x82, answer, reqIntLen, timeout);
+    }
+
+   if( r != reqIntLen )
     {
           perror("USB interrupt read"); bad("USB read failed"); 
     }
@@ -269,9 +276,13 @@ void interrupt_read_temperatura(usb_dev_handle *dev, float *tempC) {
       printf("\n");
     }
     
-    temperature = (answer[3] & 0xFF) + ((signed char)answer[2] << 8);
-    temperature += calibration;
-    *tempC = temperature * (125.0 / 32000.0);
+    temperature[0] = (answer[3] & 0xFF) + ((signed char)answer[2] << 8);
+    temperature[0] += calibration;
+    tempC[0] = temperature[0] * (125.0 / 32000.0);
+
+    temperature[1] = (answer[5] & 0xFF) + ((signed char)answer[4] << 8);
+    temperature[1] += calibration;
+    tempC[1] = temperature[1] * (125.0 / 32000.0);
 
 }
 
@@ -309,12 +320,13 @@ void ex_program(int sig) {
 int main( int argc, char **argv) {
  
      usb_dev_handle *lvr_winusb = NULL;
-     float tempc;
-     int c;
+     float tempc[2];
+     int c, i;
      struct tm *local;
      time_t t;
+     int nr_of_sensors = 1;
 
-     while ((c = getopt (argc, argv, "mfcvhl::a:")) != -1)
+     while ((c = getopt (argc, argv, "mfcvhl::a:n:")) != -1)
      switch (c)
        {
        case 'v':
@@ -350,6 +362,20 @@ int main( int argc, char **argv) {
          } else {           
               break;
          }
+       case 'n':
+         if (!sscanf(optarg,"%i",&nr_of_sensors)==1) {
+             fprintf (stderr, "Error: '%s' is not numeric.\n", optarg);
+             exit(EXIT_FAILURE);
+         } 
+         else 
+         {           
+           if ((nr_of_sensors > 2) || (nr_of_sensors < 1))
+           {
+             fprintf (stderr, "Error: '%s' is not in range [1..2].\n", optarg);
+             exit(EXIT_FAILURE);
+           }
+              break;
+         }
        case '?':
        case 'h':
          printf("pcsensor version %s\n",VERSION);
@@ -361,6 +387,7 @@ int main( int argc, char **argv) {
 	 printf("          -f output only in Fahrenheit\n");
 	 printf("          -a[n] increase or decrease temperature in 'n' degrees for device calibration\n");
 	 printf("          -m output for mrtg integration\n");
+	 printf("	   -n[n] read number of sensors [1..2]\n");
   
 	 exit(EXIT_FAILURE);
        default:
@@ -400,18 +427,24 @@ int main( int argc, char **argv) {
  
      do {
            control_transfer(lvr_winusb, uTemperatura );
-           interrupt_read_temperatura(lvr_winusb, &tempc);
+           interrupt_read_temperature(lvr_winusb, tempc);
 
            t = time(NULL);
            local = localtime(&t);
 
            if (mrtg) {
               if (formato==2) {
-                  printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
-                  printf("%.2f\n", (9.0 / 5.0 * tempc + 32.0));
+                  for (i=0;i<nr_of_sensors; i++) 
+                  {
+                    printf("%.2f\n", (9.0 / 5.0 * tempc[i] + 32.0));
+                    printf("%.2f\n", (9.0 / 5.0 * tempc[i] + 32.0));
+                  }
               } else {
-                  printf("%.2f\n", tempc);
-                  printf("%.2f\n", tempc);
+                  for (i=0;i<nr_of_sensors; i++) 
+                  {
+                    printf("%.2f\n", tempc[i]);
+                    printf("%.2f\n", tempc[i]);
+                  }
               }
               
               printf("%02d:%02d\n", 
@@ -420,23 +453,25 @@ int main( int argc, char **argv) {
 
               printf("pcsensor\n");
            } else {
-              printf("%04d/%02d/%02d %02d:%02d:%02d ", 
-                          local->tm_year +1900, 
-                          local->tm_mon + 1, 
-                          local->tm_mday,
-                          local->tm_hour,
-                          local->tm_min,
-                          local->tm_sec);
+              for (i=0;i<nr_of_sensors; i++) 
+              {
+                printf("%04d/%02d/%02d %02d:%02d:%02d ", 
+                            local->tm_year +1900, 
+                            local->tm_mon + 1, 
+                            local->tm_mday,
+                            local->tm_hour,
+                            local->tm_min,
+                            local->tm_sec);
 
-              if (formato==2) {
-                  printf("Temperature %.2fF\n", (9.0 / 5.0 * tempc + 32.0));
-              } else if (formato==1) {
-                  printf("Temperature %.2fC\n", tempc);
-              } else {
-                  printf("Temperature %.2fF %.2fC\n", (9.0 / 5.0 * tempc + 32.0), tempc);
-              }
-           }
-           
+                if (formato==2) {
+                    printf("Temperature%d %.2fF\n", i, (9.0 / 5.0 * tempc[i] + 32.0));
+                } else if (formato==1) {
+                    printf("Temperature%d %.2fC\n", i, tempc[i]);
+                } else {
+                    printf("Temperature%d %.2fF %.2fC\n", i, (9.0 / 5.0 * tempc[i] + 32.0), tempc[i]);
+                }
+             }
+          }       
            if (!bsalir)
               sleep(seconds);
      } while (!bsalir);
